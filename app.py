@@ -1,13 +1,11 @@
 # Import standard libraries
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
 
 # Import third-party libraries
 import faiss
 import nltk
 import numpy as np
-import tensorflow_datasets as tfds
 import tensorflow_hub as hub
 import uvicorn
 from fastapi import FastAPI
@@ -15,8 +13,6 @@ from nltk.corpus import stopwords
 from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.stem.porter import PorterStemmer
 from pydantic import BaseModel
-from sklearn.datasets import fetch_20newsgroups
-from tqdm import tqdm
 
 nltk.download("punkt", quiet=True)
 nltk.download("stopwords", quiet=True)
@@ -28,11 +24,6 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 logging.info("Starting script...")
 
 # Utility functions
-def load_data(data_path):
-    with open(data_path, 'r') as f:
-        data = f.readlines()
-    return data
-
 def preprocess_text(text):
     logging.info("Preprocessing text.")
     words = word_tokenize(text)
@@ -40,11 +31,6 @@ def preprocess_text(text):
     words = [word for word in words if word not in stopwords_en]
     words = [stemmer.stem(word) for word in words]
     return " ".join(words)
-
-def preprocess_data(data):
-    with ThreadPoolExecutor() as executor:
-        preprocessed_data = list(executor.map(preprocess_text, data))
-    return preprocessed_data
 
 # Load Universal Sentence Encoder
 try:
@@ -56,75 +42,47 @@ except Exception as e:
     embed = hub.load("https://tfhub.dev/google/universal-sentence-encoder/4")
     logging.info("Sentence encoder downloaded from TensorFlow Hub.")
 
-# Define index file paths
-index_filepath_newsgroups = "newsgroups_index.faiss"
-index_filepath_imdb = "imdb_index.faiss"
-logging.info("Index file paths defined.")
-
 # Initialize the indexes and documents dictionaries
 indexes = {}
 documents = {}
 
-# Fetch newsgroups dataset and tokenize
-if not os.path.exists(index_filepath_newsgroups):
-    newsgroups_train = fetch_20newsgroups(subset="train")
-    logging.info("Newsgroups data fetched and indexed.")
+def create_index_from_folder(dataset_name, directory_path, preprocess=True):
+    index_filepath = f"{dataset_name}_index.faiss"
 
-    documents_newsgroups = []
-    sentences_newsgroups = []
+    if not os.path.exists(index_filepath):
+        sentences_dataset = []
+        documents_dataset = []
 
-    for i, document in tqdm(enumerate(newsgroups_train.data), total=len(newsgroups_train.data), desc="Processing newsgroups"):
-        document = preprocess_text(document)
-        document_sentences = sent_tokenize(document)
-        sentences_newsgroups.extend(document_sentences)
-        documents_newsgroups.extend([i] * len(document_sentences))
+        for filename in os.listdir(directory_path):
+            if os.path.splitext(filename)[1] == ".txt":
+                with open(os.path.join(directory_path, filename), 'r') as f:
+                    data = f.readlines()
 
-    # Vectorize sentences and create Faiss index
-    sentence_vectors_newsgroups = embed(sentences_newsgroups).numpy()
-    dimension_newsgroups = sentence_vectors_newsgroups.shape[1]
-    index_newsgroups = faiss.IndexFlatL2(dimension_newsgroups)
-    index_newsgroups.add(sentence_vectors_newsgroups)
+                logging.info(f"{filename} data fetched and indexed.")
 
-    # Save the index to disk
-    faiss.write_index(index_newsgroups, index_filepath_newsgroups)
+                for i, document in enumerate(data):
+                    if preprocess:
+                        document = preprocess_text(document)
+                    document_sentences = sent_tokenize(document)
+                    sentences_dataset.extend(document_sentences)
+                    documents_dataset.extend([{'filename': filename, 'content': document}] * len(document_sentences))
 
-else:
-    index_newsgroups = faiss.read_index(index_filepath_newsgroups)
-    newsgroups_train = fetch_20newsgroups(subset="train")
+        # Vectorize sentences and create Faiss index
+        sentence_vectors_dataset = embed(sentences_dataset).numpy()
+        dimension_dataset = sentence_vectors_dataset.shape[1]
+        index_dataset = faiss.IndexFlatL2(dimension_dataset)
+        index_dataset.add(sentence_vectors_dataset)
 
-indexes["newsgroups"] = index_newsgroups
-documents["newsgroups"] = newsgroups_train.data
+        # Save the index to disk
+        faiss.write_index(index_dataset, index_filepath)
 
-# Fetch IMDB dataset and tokenize
-if not os.path.exists(index_filepath_imdb):
-    imdb_train = tfds.load("imdb_reviews", split="train[:5000]", shuffle_files=True)
-    logging.info("IMDB data fetched and indexed.")
+    else:
+        index_dataset = faiss.read_index(index_filepath)
 
-    documents_imdb = []
-    sentences_imdb = []
+    indexes[dataset_name] = index_dataset
+    documents[dataset_name] = documents_dataset
 
-    for i, example in tqdm(enumerate(imdb_train), total=5000, desc="Processing IMDB"):
-        document = preprocess_text(example["text"].numpy().decode("utf-8"))
-        document_sentences = sent_tokenize(document)
-        sentences_imdb.extend(document_sentences)
-        documents_imdb.extend([i] * len(document_sentences))
-
-    # Vectorize sentences and create Faiss index
-    sentence_vectors_imdb = embed(sentences_imdb).numpy()
-    dimension_imdb = sentence_vectors_imdb.shape[1]
-    index_imdb = faiss.IndexFlatL2(dimension_imdb)
-    index_imdb.add(sentence_vectors_imdb)
-
-    # Save the index to disk
-    faiss.write_index(index_imdb, index_filepath_imdb)
-
-else:
-    index_imdb = faiss.read_index(index_filepath_imdb)
-    imdb_train = tfds.load("imdb_reviews", split="train[:5000]", shuffle_files=True)
-    sentences_imdb = [example["text"].numpy().decode("utf-8") for example in imdb_train]
-
-indexes['imdb'] = index_imdb
-documents['imdb'] = sentences_imdb
+    return f"{dataset_name} index created"
 
 # Create FastAPI app
 app = FastAPI(
@@ -136,7 +94,7 @@ logging.info("FastAPI app created.")
 
 class Index(BaseModel):
     name: str
-    data_path: str
+    folder_path: str
 
 class Search(BaseModel):
     query: str
@@ -152,56 +110,32 @@ def list_indexes():
 
 @app.post("/create_index")
 def create_index(index: Index):
-    # Load and preprocess the data
-    data = load_data(index.data_path)
-    preprocessed_data = preprocess_data(data)
+    dataset_name = index.name
+    folder_path = index.folder_path
 
-    # Create and save the Faiss index
-    index_vectors = embed(preprocessed_data).numpy()
-    dimension = index_vectors.shape[1]
-    faiss_index = faiss.IndexFlatL2(dimension)
-    faiss_index.add(index_vectors)
-    
-    # Save the index to disk
-    index_filepath = f"{index.name}_index.faiss"
-    faiss.write_index(faiss_index, index_filepath)
-    
-    # Add to the in-memory index dictionary
-    indexes[index.name] = faiss_index
-    documents[index.name] = data
-    
-    return {"message": f"Index {index.name} created successfully"}
+    create_index_from_folder(dataset_name, folder_path)
 
-@app.get("/view_index/{index_name}")
-async def view_index(index_name: str):
-    if index_name in indexes:
-        index = indexes[index_name]
-        return {
-            "Number of vectors": index.ntotal,
-            "Vector dimension": index.d
-        }
-    else:
-        return {"error": f"No index found with the name '{index_name}'."}
-
-@app.post("/preprocess")
-def preprocess_endpoint(text: str):
-    return {"processed_text": preprocess_text(text)}
+    return {"message": f"Index {dataset_name} created successfully"}
 
 @app.post("/search")
-def search_endpoint(search: Search):
-    logging.info("Performing search.")
+def search(search: Search):
     query = search.query
     index_name = search.index
-        
-    if index_name not in indexes:
-        return {"error": f"Invalid index name. Valid options are: {list(indexes.keys())}"}
-        
-    query = preprocess_text(query)
+
     query_vector = embed([query]).numpy()
-    top_k = 10
-    D, I = indexes[index_name].search(query_vector.astype(np.float32), top_k)
-    results = [documents[index_name][i] for i in I[0]]
+    D, I = indexes[index_name].search(query_vector, k=5)
+
+    results = []
+    for i in range(I.shape[1]):
+        document_id = I[0][i]
+        document_info = documents[index_name][document_id]
+        results.append({
+            "document": document_info['content'],
+            "filename": document_info['filename'],
+            "score": D[0][i],
+        })
+
     return {"results": results}
-    
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
