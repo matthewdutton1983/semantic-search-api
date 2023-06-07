@@ -5,3 +5,4 @@ pandas == 2.0.2
 requests == 2.31.0
 tensorflow-hub == 0.13.0
 sqlalchemy == 2.0.15
+uvicorn == 0.22.0
