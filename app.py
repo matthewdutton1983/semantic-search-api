@@ -30,10 +30,8 @@ try:
     embed = hub.load("./universal-sentence-encoder")
     logging.info("Sentence encoder loaded from local 'models' directory.")
 except Exception as e:
-    logging.warning("Could not load the model locally. Error: {}".format(e))
-    logging.info("Attempting to download model from TensorFlow Hub...")
     embed = hub.load("https://tfhub.dev/google/universal-sentence-encoder/4")
-    logging.info("Sentence encoder downloaded from TensorFlow Hub.")
+    logging.info("Sentence encoder loaded from TensorFlow Hub.")
 
 # Utility functions
 def db_exists():
@@ -47,86 +45,97 @@ def faiss_index_exists():
 def process_text(text):
     return text.lower()
 
-# Create SQLite database
-engine = create_engine("sqlite:///sentences.db", echo=False)
-metadata = MetaData()
-sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), Column("original_text", String), Column("clean_text", String), Column("document_ids", PickleType), Column("embedding", PickleType))
-metadata.create_all(engine)
+if db_exists() and faiss_index_exists():
+    # Connect to existing SQLite database
+    engine = create_engine(f"sqlite:///{DATABASE_PATH}", echo=False)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    logging.info("Connected to existing SQLite database.")
+    
+    # Load Faiss index from disk
+    faiss_index = faiss.read_index(FAISS_INDEX_PATH)
+    logging.info("Loaded Faiss index from disk.")
+else:
+    # Create SQLite database
+    engine = create_engine("sqlite:///sentences.db", echo=False)
+    metadata = MetaData()
+    sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), Column("original_text", String), Column("clean_text", String), Column("document_ids", PickleType), Column("embedding", PickleType))
+    metadata.create_all(engine)
 
-# Start SQLite session
-Session = sessionmaker(bind=engine)
-session = Session()  
+    # Start SQLite session
+    Session = sessionmaker(bind=engine)
+    session = Session()  
 
-# Create Faiss index
-dim = 512
-faiss_index = faiss.IndexFlatL2(512)
-faiss_index = faiss.IndexIDMap(faiss_index)
+    # Create Faiss index
+    dim = 512
+    faiss_index = faiss.IndexFlatL2(512)
+    faiss_index = faiss.IndexIDMap(faiss_index)
 
-# Process documents
-count = 0
-unique_sentences = {}
-seen_sentences = {}
-sent_indexes = []
-embeddings = []
+    # Process documents
+    count = 0
+    unique_sentences = {}
+    seen_sentences = {}
+    sent_indexes = []
+    embeddings = []
 
-documents = glob.glob(DOCUMENTS_PATH + "*")
+    documents = glob.glob(DOCUMENTS_PATH + "*")
 
-BATCH_SIZE = 1000
+    BATCH_SIZE = 1000
 
-for document in documents:
-    try:
-        unique_id = uuid.uuid4()
+    for document in documents:
+        try:
+            unique_id = uuid.uuid4()
 
-        with open(document, "r") as f:
-            text = f.read()
-            name = os.path.basename(document)
+            with open(document, "r") as f:
+                text = f.read()
+                name = os.path.basename(document)
 
-        raw_sentences = sent_tokenize(text)
+            raw_sentences = sent_tokenize(text)
 
-        for raw_sentence in raw_sentences:
-            clean_sentence = process_text(text)
+            for raw_sentence in raw_sentences:
+                clean_sentence = process_text(text)
 
-            if not clean_sentence.strip():
-                continue
+                if not clean_sentence.strip():
+                    continue
 
-            if clean_sentence not in seen_sentences:
-                embedding = embed([clean_sentence]).numpy()[0].tolist()
-                embeddings.append(embedding)
+                if clean_sentence not in seen_sentences:
+                    embedding = embed([clean_sentence]).numpy()[0].tolist()
+                    embeddings.append(embedding)
 
-                unique_sentences[count] = {
-                    "original_text": raw_sentence,
-                    "clean_text": clean_sentence,
-                    "document_ids: [unique_id],
-                    "embedding": embedding
-                }
+                    unique_sentences[count] = {
+                        "original_text": raw_sentence,
+                        "clean_text": clean_sentence,
+                        "document_ids: [unique_id],
+                        "embedding": embedding
+                    }
 
-                sent_indexes.append(count)
-                seen_sentences[clean_sentence] = count
+                    sent_indexes.append(count)
+                    seen_sentences[clean_sentence] = count
 
-                stmt = sentences_table.insert().values(
-                    sent_idx = count,
-                    original_text = unique_sentences[count]["original_text"],
-                    clean_text = unique_sentences[count]["document_ids"],
-                    embedding = unique_sentences[count]["embedding"]
-                )
+                    stmt = sentences_table.insert().values(
+                        sent_idx = count,
+                        original_text = unique_sentences[count]["original_text"],
+                        clean_text = unique_sentences[count]["document_ids"],
+                        embedding = unique_sentences[count]["embedding"]
+                    )
 
-                session.execute(stmt)
-                session.commit()
+                    session.execute(stmt)
+                    session.commit()
 
-            else:
-                sentence_index = seen_sentences[clean_sentence]
-                unique_sentences[sentence_index]["document_ids"].append(unique_id)
+                else:
+                    sentence_index = seen_sentences[clean_sentence]
+                    unique_sentences[sentence_index]["document_ids"].append(unique_id)
 
-            if count % BATCH_SIZE == 0:
-                print(f"Loaded {count} sentences.")
+                if count % BATCH_SIZE == 0:
+                    print(f"Loaded {count} sentences.")
 
-            count += 1
-            
-    except Exception as e:
-        print(f"Error processing document with id {unique_id}: {str(e)}")
+                count += 1
 
-faiss_index.add_with_ids(np.array(embeddings), np.array(sent_indexes))
-faiss.write_index(faiss_index, "sentences.faiss")
+        except Exception as e:
+            print(f"Error processing document with id {unique_id}: {str(e)}")
+
+    faiss_index.add_with_ids(np.array(embeddings), np.array(sent_indexes))
+    faiss.write_index(faiss_index, "sentences.faiss")
 
 def semantic_search(query):
     clean_query = process_text(query)
