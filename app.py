@@ -45,6 +45,9 @@ def faiss_index_exists():
 def process_text(text):
     return text.lower()
 
+metadata = MetaData()
+sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), Column("original_text", String), Column("clean_text", String), Column("document_ids", PickleType), Column("embedding", PickleType))
+
 if db_exists() and faiss_index_exists():
     # Connect to existing SQLite database
     engine = create_engine(f"sqlite:///{DATABASE_PATH}", echo=False)
@@ -58,8 +61,6 @@ if db_exists() and faiss_index_exists():
 else:
     # Create SQLite database
     engine = create_engine("sqlite:///sentences.db", echo=False)
-    metadata = MetaData()
-    sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), Column("original_text", String), Column("clean_text", String), Column("document_ids", PickleType), Column("embedding", PickleType))
     metadata.create_all(engine)
 
     # Start SQLite session
