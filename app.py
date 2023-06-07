@@ -37,7 +37,7 @@ faiss_index = faiss.IndexIDMap(faiss_index)
 
 engine = create_engine("sqlite:///sentences.db", echo=False)
 metadata = MetaData()
-sentences_table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), Column("original_text", String), Column("clean_text", String), Column("document_ids", PickleType), Column("embedding", PickleType))
+sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), Column("original_text", String), Column("clean_text", String), Column("document_ids", PickleType), Column("embedding", PickleType))
 metadata.create_all(engine)
 
 Session = sessionmaker(bind=engine)
