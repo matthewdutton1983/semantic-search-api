@@ -15,12 +15,16 @@ import uvicorn
 from fastapi import FastAPI
 from nltk.tokenize import sent_tokenize
 from pydantic import BaseModel
-from sqlalchemy import create_engine, select, Table, Column, Integer, String, MetaData, PickleType
+from sqlalchemy import create_engine, inspect, select, Table, Column, Integer, String, MetaData, PickleType
 from sqlalchemy.orm import sessionmaker
 
-nltk.download("punkt", quiet=True)
-
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+DATABASE_PATH = "sentences.db"
+DOCUMENTS_PATH = "./documents/"
+FAISS_INDEX_PATH = "sentences.faiss"
+
+nltk.download("punkt", quiet=True)
 
 try:
     embed = hub.load("./universal-sentence-encoder")
@@ -31,32 +35,43 @@ except Exception as e:
     embed = hub.load("https://tfhub.dev/google/universal-sentence-encoder/4")
     logging.info("Sentence encoder downloaded from TensorFlow Hub.")
 
-dim = 512
-faiss_index = faiss.IndexFlatL2(512)
-faiss_index = faiss.IndexIDMap(faiss_index)
+# Utility functions
+def db_exists():
+    engine = create_engine(f"sqlite:///{DATABASE_PATH}", echo=False)
+    inspector = inspect(engine)
+    return "sentences" in inspector.get_table_names()
 
+def faiss_index_exists():
+    return os.path.isfile(FAISS_INDEX_PATH)
+
+def process_text(text):
+    return text.lower()
+
+# Create SQLite database
 engine = create_engine("sqlite:///sentences.db", echo=False)
 metadata = MetaData()
 sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), Column("original_text", String), Column("clean_text", String), Column("document_ids", PickleType), Column("embedding", PickleType))
 metadata.create_all(engine)
 
+# Start SQLite session
 Session = sessionmaker(bind=engine)
 session = Session()  
 
-# Process documents
-def process_text(text):
-    return text.lower()
+# Create Faiss index
+dim = 512
+faiss_index = faiss.IndexFlatL2(512)
+faiss_index = faiss.IndexIDMap(faiss_index)
 
+# Process documents
 count = 0
 unique_sentences = {}
 seen_sentences = {}
 sent_indexes = []
 embeddings = []
 
-folder_path = "./documents/"
-documents = glob.glob(folder_path + "*")
+documents = glob.glob(DOCUMENTS_PATH + "*")
 
-BATCH_SIZE = 250
+BATCH_SIZE = 1000
 
 for document in documents:
     try:
