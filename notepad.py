@@ -60,14 +60,37 @@ else:
     embed = hub.load("./universal-sentence-encoder")
 
     config = ConfigParser()
-    config.read("<ADD PATH>")
+    config.read("H:/jpmDesk/Desktop/credentials.ini")
     username = config.get("default", "username")
     password = config.get("default", "password")
 
-    data = pd.read_excel("<ADD FILE NAME>", engine="openpyxl")
-    unique_ids = list(data["<ADD KEY>"])
+    data = pd.read_excel("executedAgreements5-22-2023.xlsx", engine="openpyxl")
+    unique_ids = list(data["UnifiedDocID"])
     
-    <ADD TOKEN, METADATA AND TEXT FUNCTIONS>
+    def get_doclink_token(username, password):
+        url = "https://idag2.jpmorganchase.com/adfs/oauth2/token"
+        payload = {
+            "client_id": "PC-34963-SID-20429-PROD",
+            "grant_type": "password",
+            "username": "NAEAST\\" + username,
+            "password": password,
+            "resource": "JPMC:URI:RS-34963-18863-AWMContentCloud-PROD"
+        }
+        response = requests.post(url, payload)
+        token = response.json()["access_token"]
+        return token
+    
+    def get_document_metadata(unique_id, token):
+        url = f"https://ecm-doclink-services.prod.gaiacloud.jpmchase.net/api/core/v1/app/Scribe/documents/{unique_id}"
+        payload = {}
+        headers = {
+            "Accept": "application/json",
+        }
+        response = requests.get(url=url, headers=headers, data=payload)
+        return response.text
+    
+    def process_documents(document_ids):
+        pass
     
     # Process documents
     count = 0
@@ -84,12 +107,12 @@ else:
     for unique_id in unique_ids:
         try:
             if count % BATCH_SIZE == 0:
-                token = <GET TOKEN>(username, password)
+                token = get_doclink_token(username, password)
                 logging.info(f"New token fetched for batch starting at {count}.")
 
-            document_text = <GET TEXT>(unique_id, token)
-            document_metadata = <GET METADATA>(unique_id, token)
-            document_name = <PARSE METADATA>
+            document_text = get_document_text(unique_id, token)
+            document_metadata = get_document_metadata(unique_id, token)
+            document_name = document_metadata["metadata"]["core"]["documentName"]
 
             raw_sentences = sent_tokenize(document_text)
 
