@@ -6,22 +6,25 @@ import os
 import faiss
 import nltk
 import numpy as np
+import pandas as pd
+import requests
 import tensorflow_hub as hub
-import uvicorn
 from fastapi import FastAPI
-from nltk.corpus import stopwords
-from nltk.tokenize import sent_tokenize, word_tokenize
-from nltk.stem.porter import PorterStemmer
+from nltk.tokenize import sent_tokenize
 from pydantic import BaseModel
+from sqlalchemy import create_engine, select, Table, Column, Integer, String, MetaData, PickleType
+from sqlalchemy.orm import sessionmaker
 
 nltk.download("punkt", quiet=True)
-nltk.download("stopwords", quiet=True)
-
-stemmer = PorterStemmer()
-stopwords_en = stopwords.words("english")
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
-logging.info("Starting script...")
+
+
+
+
+
+
+
 
 # Utility functions
 def preprocess_text(text):
