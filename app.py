@@ -80,8 +80,6 @@ else:
 
     documents = glob.glob(DOCUMENTS_PATH + "*")
 
-    BATCH_SIZE = 1000
-
     for document in documents:
         try:
             unique_id = uuid.uuid4()
