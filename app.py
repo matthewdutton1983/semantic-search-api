@@ -41,7 +41,7 @@ sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, prima
 metadata.create_all(engine)
 
 Session = sessionmaker(bind=engine)
-Session = Session()  
+session = Session()  
 
 # Process documents
 def process_text(text):
