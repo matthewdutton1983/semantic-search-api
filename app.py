@@ -1,6 +1,8 @@
 # Import standard libraries
+import glob
 import logging
 import os
+import uuid
 
 # Import third-party libraries
 import faiss
@@ -9,6 +11,7 @@ import numpy as np
 import pandas as pd
 import requests
 import tensorflow_hub as hub
+import uvicorn
 from fastapi import FastAPI
 from nltk.tokenize import sent_tokenize
 from pydantic import BaseModel
@@ -19,73 +22,127 @@ nltk.download("punkt", quiet=True)
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-
-
-
-
-
-
-
-# Utility functions
-def preprocess_text(text):
-    logging.info("Preprocessing text.")
-    words = word_tokenize(text)
-    words = [word.lower() for word in words if word.isalpha()]
-    words = [word for word in words if word not in stopwords_en]
-    words = [stemmer.stem(word) for word in words]
-    return " ".join(words)
-
-# Load Universal Sentence Encoder
 try:
     embed = hub.load("./universal-sentence-encoder")
     logging.info("Sentence encoder loaded from local 'models' directory.")
 except Exception as e:
     logging.warning("Could not load the model locally. Error: {}".format(e))
-    logging.warning("Attempting to download model from TensorFlow Hub...")
+    logging.info("Attempting to download model from TensorFlow Hub...")
     embed = hub.load("https://tfhub.dev/google/universal-sentence-encoder/4")
     logging.info("Sentence encoder downloaded from TensorFlow Hub.")
 
-# Initialize the indexes and documents dictionaries
-indexes = {}
-documents = {}
+dim = 512
+faiss_index = faiss.IndexFlatL2(512)
+faiss_index = faiss.IndexIDMap(faiss_index)
 
-def create_index_from_folder(dataset_name, directory_path, preprocess=True):
-    index_filepath = f"{dataset_name}_index.faiss"
+engine = create_engine("sqlite:///sentences.db", echo=False)
+metadata = MetaData()
+sentences_table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), Column("original_text", String), Column("clean_text", String), Column("document_ids", PickleType), Column("embedding", PickleType))
+metadata.create_all(engine)
 
-    if not os.path.exists(index_filepath):
-        sentences_dataset = []
-        documents_dataset = []
+Session = sessionmaker(bind=engine)
+Session = Session()  
 
-        for filename in os.listdir(directory_path):
-            if os.path.splitext(filename)[1] == ".txt":
-                with open(os.path.join(directory_path, filename), 'r') as f:
-                    data = f.readlines()
+# Process documents
+def process_text(text):
+    return text.lower()
 
-                logging.info(f"{filename} data fetched and indexed.")
+count = 0
+unique_sentences = {}
+seen_sentences = {}
+sent_indexes = []
+embeddings = []
 
-                for i, document in enumerate(data):
-                    if preprocess:
-                        document = preprocess_text(document)
-                    document_sentences = sent_tokenize(document)
-                    sentences_dataset.extend(document_sentences)
-                    documents_dataset.extend([{'filename': filename, 'content': document}] * len(document_sentences))
+folder_path = "./documents/"
+documents = glob.glob(folder_path + "*")
 
-        # Vectorize sentences and create Faiss index
-        sentence_vectors_dataset = embed(sentences_dataset).numpy()
-        dimension_dataset = sentence_vectors_dataset.shape[1]
-        index_dataset = faiss.IndexFlatL2(dimension_dataset)
-        index_dataset.add(sentence_vectors_dataset)
+BATCH_SIZE = 250
 
-        # Save the index to disk
-        faiss.write_index(index_dataset, index_filepath)
+for document in documents:
+    try:
+        unique_id = uuid.uuid4()
 
-    else:
-        index_dataset = faiss.read_index(index_filepath)
+        with open(document, "r") as f:
+            text = f.read()
+            name = os.path.basename(document)
 
-    indexes[dataset_name] = index_dataset
-    documents[dataset_name] = documents_dataset
+        raw_sentences = sent_tokenize(text)
 
-    return f"{dataset_name} index created"
+        for raw_sentence in raw_sentences:
+            clean_sentence = process_text(text)
+
+            if not clean_sentence.strip():
+                continue
+
+            if clean_sentence not in seen_sentences:
+                embedding = embed([clean_sentence]).numpy()[0].tolist()
+                embeddings.append(embedding)
+
+                unique_sentences[count] = {
+                    "original_text": raw_sentence,
+                    "clean_text": clean_sentence,
+                    "document_ids: [unique_id],
+                    "embedding": embedding
+                }
+
+                sent_indexes.append(count)
+                seen_sentences[clean_sentence] = count
+
+                stmt = sentences_table.insert().values(
+                    sent_idx = count,
+                    original_text = unique_sentences[count]["original_text"],
+                    clean_text = unique_sentences[count]["document_ids"],
+                    embedding = unique_sentences[count]["embedding"]
+                )
+
+                session.execute(stmt)
+                session.commit()
+
+            else:
+                sentence_index = seen_sentences[clean_sentence]
+                unique_sentences[sentence_index]["document_ids"].append(unique_id)
+
+            if count % BATCH_SIZE == 0:
+                print(f"Loaded {count} sentences.")
+
+            count += 1
+            
+    except Exception as e:
+        print(f"Error processing document with id {unique_id}: {str(e)}")
+
+faiss_index.add_with_ids(np.array(embeddings), np.array(sent_indexes))
+faiss.write_index(faiss_index, "sentences.faiss")
+
+def semantic_search(query):
+    clean_query = process_text(query)
+    query_embedding = embed([clean_query])
+    
+    D, I = faiss_index.search(query_embedding, k=10)
+    
+    results = []
+    
+    for i in range(I.shape[1]):
+        index_id = int(I[0, i])
+        similarity_score = D[0. i]
+        
+        stmt = select(sentences_table).where(sentences_table.c.sent_idx == index_id)
+        result = session.execute(stmt).fetchone()
+        
+        if result is not None:
+            document_ids = result[3]
+            original_text = result[1]
+            
+            sentence_info = {
+                "text": original_text,
+                "document_ids": document_ids,
+                "similarity_score": similarity_score
+            }
+            
+            results.append(sentence_info)
+        else:
+            print(f"No result found for index_id {index_id}")
+    
+    return results
 
 # Create FastAPI app
 app = FastAPI(
@@ -93,51 +150,18 @@ app = FastAPI(
     description="This is a simple API for conducting semantic searches that utilizes Faiss and the Universal Sentence Encoder.", 
     version="1.0.0"
 )
-logging.info("FastAPI app created.")
-
-class Index(BaseModel):
-    name: str
-    folder_path: str
 
 class Search(BaseModel):
     query: str
-    index: str
 
 @app.get("/health")
 def health_check():
     return {"message": "The server is running"}
 
-@app.get("/indexes")
-def list_indexes():
-    return {"indexes": list(indexes.keys())}
-
-@app.post("/create_index")
-def create_index(index: Index):
-    dataset_name = index.name
-    folder_path = index.folder_path
-
-    create_index_from_folder(dataset_name, folder_path)
-
-    return {"message": f"Index {dataset_name} created successfully"}
-
 @app.post("/search")
 def search(search: Search):
     query = search.query
-    index_name = search.index
-
-    query_vector = embed([query]).numpy()
-    D, I = indexes[index_name].search(query_vector, k=5)
-
-    results = []
-    for i in range(I.shape[1]):
-        document_id = I[0][i]
-        document_info = documents[index_name][document_id]
-        results.append({
-            "document": document_info['content'],
-            "filename": document_info['filename'],
-            "score": D[0][i],
-        })
-
+    results = semantic_search(query)
     return {"results": results}
 
 if __name__ == "__main__":
