@@ -1,7 +1,7 @@
 # Import standard libraries
 import logging
 import os
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Union
 
 # Import third-party libraries
 import faiss
@@ -12,7 +12,7 @@ import requests
 import tensorflow_hub as hub
 import uvicorn
 from configparser import ConfigParser
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI
 from nltk.tokenize import sent_tokenize
 from pydantic import BaseModel
 from sqlalchemy import create_engine, inspect, select, Table, Column, Integer, MetaData, PickleType, String
@@ -64,31 +64,31 @@ def db_exists() -> bool:
 def faiss_index_exists() -> bool:
     """Check is the Faiss index exists"""
     return os.path.isfile("sentences.faiss")
+    
+database_exists = db_exists()
+index_exists = faiss_index_exists()
 
-# If database and index exist, load them
-# Otherwise, create new ones
-if db_exists() and faiss_index_exists():
+if database_exists:
     # Connect to existing database
     engine = create_engine(f"sqlite:///sentences.db", echo=True)
     Session = sessionmaker(bind=engine)
     session = Session()
     logging.info("Connected to existing database.")
-
-    # Load Faiss index from disk
-    faiss_index = faiss.read_index("sentences.db")
-    logging.info("Loaded Faiss index from disk.")
 else:
-    # Create new database
     engine = create_engine("sqlite:///sentences.db", echo=True)
     metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     session = Session()
-
-    # Create Faiss index
+    
+if index_exists:
+    faiss_index = faiss.read_index("sentences.db")
+    logging.info("Loaded Faiss index from disk.")
+else:
     dim = 512
     faiss_index = faiss.IndexFlatL2(dim)
     faiss_index = faiss.IndexIDMap(faiss_index)
 
+if not database_exists or not index_exists:
     # Load credentials
     config = ConfigParser()
     config.read("H:/jpmDesk/Desktop/credentials.ini")
@@ -119,6 +119,16 @@ else:
         payload = {}
         headers = {
             "Accept": "application/json",
+        }
+        response = requests.get(url=url, headers=headers, data=payload)
+        return response.json()
+        
+    def get_document_text(unique_id: str, token: str) -> str:
+        url = f"https://ecm-doclink-services.prod.gaiacloud.jpmchase.net/api/core/v1/app/Scribe/documents/{unique_id}"
+        payload = {}
+        headers = {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer" + token
         }
         response = requests.get(url=url, headers=headers, data=payload)
         return response.text
@@ -173,7 +183,7 @@ else:
                     batch_sentences.append({
                         "sent_idx": count,
                         "original_text": raw_sentence,
-                        "clean_sentence": clean_sentence,
+                        "clean_text": clean_sentence,
                         "documents": [{"id": unique_id, "name": document_name}],
                         "embedding": embedding
                     })
@@ -213,8 +223,8 @@ def semantic_search(query: str, num_results: int = 10, context: int = 0) -> List
     results = []
 
     for i in range(I.shape[1]):
-        index_id =  int(I[0, 1])
-        similarity_score = D[0, 1]
+        index_id =  int(I[0, i])
+        similarity_score = D[0, i]
 
         stmt = select(sentences_table).where(sentences_table.c.sent_idx == index_id)
         result = session.execute(stmt).fetchone()
@@ -254,19 +264,6 @@ def semantic_search(query: str, num_results: int = 10, context: int = 0) -> List
 def health_check() -> Dict[str, str]:
     """Returns a message indicating that the server is running"""
     return {"message": "The server is running."}
-
-async def process_documents_task(document_ids: List[str]) -> None:
-    """Process the specified documents"""
-    for document_id in document_ids:
-      await process_documents(document_id)
-
-@app.post("/process")
-async def process_documents(background_tasks: BackgroundTasks, document_ids: List[str]) -> Dict[str, str]:
-    """Start a background task to process the specified documents"""
-    background_tasks.add_task(process_documents_task, document_ids)
-    logging.info(f"Processing started for {len(document_ids)} documents.")
-    
-    return {"message": f"Processing started for {len(document_ids)} documents."}
 
 @app.post("/search")
 def search(request: Search) -> Dict[str, Any]:
