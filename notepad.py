@@ -194,37 +194,37 @@ else:
 
     faiss.write_index(faiss_index, "sentences.faiss")
 
-    def semantic_search(query: str, num_results: int) -> List[Dict[str, Union[str, List[Dict[str, str]], float]]]:
-        """Perform a semantic search given a query and the desired number of results"""
-        clean_query = query.lower()
-        query_embedding = embed([clean_query])
+def semantic_search(query: str, num_results: int) -> List[Dict[str, Union[str, List[Dict[str, str]], float]]]:
+    """Perform a semantic search given a query and the desired number of results"""
+    clean_query = query.lower()
+    query_embedding = embed([clean_query])
 
-        D, I = faiss_index.search(query_embedding, k=num_results)
+    D, I = faiss_index.search(query_embedding, k=num_results)
 
-        results = []
+    results = []
 
-        for i in range(I.shape[1]):
-            index_id =  int(I[0, 1])
-            similarity_score = D[0, 1]
+    for i in range(I.shape[1]):
+        index_id =  int(I[0, 1])
+        similarity_score = D[0, 1]
 
-            stmt = select(sentences_table).where(sentences_table.c.sent_idx == index_id)
-            result = session.execute(stmt).fetchone()
+        stmt = select(sentences_table).where(sentences_table.c.sent_idx == index_id)
+        result = session.execute(stmt).fetchone()
 
-            if result is not None:
-                documents = result[3]
-                original_text = result[1]
+        if result is not None:
+            documents = result[3]
+            original_text = result[1]
 
-                sentence_info = {
-                    "text": original_text,
-                    "documents": documents,
-                    "similarity_score": float(similarity_score)
-                }
-                
-                results.append(sentence_info)
-            else:
-                logging.info(f"No result found for index_id {index_id}")
+            sentence_info = {
+                "text": original_text,
+                "documents": documents,
+                "similarity_score": float(similarity_score)
+            }
 
-        return results
+            results.append(sentence_info)
+        else:
+            logging.info(f"No result found for index_id {index_id}")
+
+    return results
 
 @app.get("/health")
 def health_check() -> Dict[str, str]:
