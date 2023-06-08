@@ -32,8 +32,9 @@ def faiss_index_exists() -> None:
     return os.path.isfile("sentences.faiss")
 
 metadata = MetaData()
-sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), Column("original_text", String), 
-                        Column("clean_text", String), Column("documents", PickleType), Column("embedding", PickleType))
+sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), 
+                        Column("original_text", String), Column("clean_text", String), 
+                        Column("documents", PickleType), Column("embedding", PickleType))
 
 if db_exists() and faiss_index_exists():
     # Connect to existing database
@@ -129,7 +130,7 @@ else:
                     unique_sentences[count] = {
                         "original_text": raw_sentence,
                         "clean_text": clean_sentence,
-                        "document_ids": [unique_id],
+                        "documents": [{"id": unique_name, "name": document_name}],
                         "embedding": embedding
                     }
 
@@ -140,12 +141,12 @@ else:
                         "sent_idx": count,
                         "original_text": raw_sentence,
                         "clean_sentence": clean_sentence,
-                        "document_ids": [unique_id],
+                        "documents": [{"id": unique_id, "name": document_name}],
                         "embedding": embedding
                     })
                 else:
                     sentence_index = seen_sentences[clean_sentence]
-                    unique_sentences[sentence_index]["document_ids"].append(unique_id)
+                    unique_sentences[sentence_index]["documents"].({"id": unique_id, "name": document_name})
 
                 count += 1
 
@@ -185,12 +186,12 @@ else:
             result = session.execute(stmt).fetchone()
 
             if result is not None:
-                document_ids = result[3]
+                documents = result[3]
                 original_text = result[1]
 
                 sentence_info = {
                     "text": original_text,
-                    "document_ids": document_ids,
+                    "documents": documents,
                     "similarity_score": float(similarity_score)
                 }
                 
