@@ -1,7 +1,7 @@
 # Import standard libraries
 import logging
 import os
-from typing import List
+from typing import Any, Dict, List, Tuple, Union
 
 # Import third-party libraries
 import faiss
@@ -18,24 +18,46 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, inspect, select, Table, Column, Integer, MetaData, PickleType, String
 from sqlalchemy.orm import sessionmaker
 
+# Initialize logging
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
+# Download NLTK data
 nltk.download("punkt", quiet=True)
 
-def db_exists() -> None:
-    engine = create_engine(f"sqlite:///sentences.db", echo=True)
-    inspector = inspect(engine)
-    
-    return "sentences" in inspector.get_table_names()
-
-def faiss_index_exists() -> None:
-    return os.path.isfile("sentences.faiss")
-
+# Define the database schema
 metadata = MetaData()
 sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), 
                         Column("original_text", String), Column("clean_text", String), 
                         Column("documents", PickleType), Column("embedding", PickleType))
 
+# Load the Universal Sentence Encoder from disk
+embed = hub.load("./universal-sentence-encoder")
+
+# Define the search request model
+class Search(BaseModel):
+    query: str
+    num_results: int
+        
+# Define the FastAPI app
+app = FastAPI(
+    title="Semantic Similarity Search Demo",
+    description="This is a simple API for conducting semantic similarity searches to find language in Executed Agreements. The API utilizes a Faiss index, developed by Facebook AI, and the Universal Sentence Encoder from Google.",
+    version="1.0.0"
+)
+
+def db_exists() -> bool:
+    """Check if the database exists"""
+    engine = create_engine(f"sqlite:///sentences.db", echo=True)
+    inspector = inspect(engine)
+    
+    return "sentences" in inspector.get_table_names()
+
+def faiss_index_exists() -> bool:
+    """Check is the Faiss index exists"""
+    return os.path.isfile("sentences.faiss")
+
+# If database and index exist, load them
+# Otherwise, create new ones
 if db_exists() and faiss_index_exists():
     # Connect to existing database
     engine = create_engine(f"sqlite:///sentences.db", echo=True)
@@ -58,17 +80,18 @@ else:
     faiss_index = faiss.IndexFlatL2(dim)
     faiss_index = faiss.IndexIDMap(faiss_index)
 
-    embed = hub.load("./universal-sentence-encoder")
-
+    # Load credentials
     config = ConfigParser()
     config.read("H:/jpmDesk/Desktop/credentials.ini")
     username = config.get("default", "username")
     password = config.get("default", "password")
-
+    
+    # Load document data
     data = pd.read_excel("executedAgreements5-22-2023.xlsx", engine="openpyxl")
     unique_ids = list(data["UnifiedDocID"])
     
-    def get_doclink_token(username, password):
+    def get_doclink_token(username: str, password: str) -> str:
+        """Retrieve doclink token for given user"""
         url = "https://idag2.jpmorganchase.com/adfs/oauth2/token"
         payload = {
             "client_id": "PC-34963-SID-20429-PROD",
@@ -81,7 +104,8 @@ else:
         token = response.json()["access_token"]
         return token
     
-    def get_document_metadata(unique_id, token):
+    def get_document_metadata(unique_id: str, token: str) -> str:
+        """Retrieve document metadata"""
         url = f"https://ecm-doclink-services.prod.gaiacloud.jpmchase.net/api/core/v1/app/Scribe/documents/{unique_id}"
         payload = {}
         headers = {
@@ -90,7 +114,7 @@ else:
         response = requests.get(url=url, headers=headers, data=payload)
         return response.text
     
-    def process_documents(document_ids):
+    def process_documents(document_ids: List[str]) -> None:
         pass
     
     # Process documents
@@ -170,7 +194,8 @@ else:
 
     faiss.write_index(faiss_index, "sentences.faiss")
 
-    def semantic_search(query, num_results):
+    def semantic_search(query: str, num_results: int) -> List[Dict[str, Union[str, List[Dict[str, str]], float]]]:
+        """Perform a semantic search given a query and the desired number of results"""
         clean_query = query.lower()
         query_embedding = embed([clean_query])
 
@@ -200,34 +225,31 @@ else:
                 logging.info(f"No result found for index_id {index_id}")
 
         return results
-    
-app = FastAPI(
-    title="Semantic Similarity Search Demo",
-    description="This is a simple API for conducting semantic similarity searches to find language in Executed Agreements. The API utilizes a Faiss index, developed by Facebook AI, and the Universal Sentence Encoder from Google.",
-    version="1.0.0"
-)
-
-class Search(BaseModel):
-    query: str
-    num_results: int
 
 @app.get("/health")
-def health_check():
+def health_check() -> Dict[str, str]:
+    """Returns a message indicating that the server is running"""
     return {"message": "The server is running."}
 
-def process_documents_task(document_ids: List[str]):
+def process_documents_task(document_ids: List[str]) -> None:
+    """Process the specified documents"""
     process_documents(document_ids)
 
 @app.post("/process")
-async def process_documents(background_tasks: BackgroundTasks, document_ids: List[str]):
+async def process_documents(background_tasks: BackgroundTasks, document_ids: List[str]) -> Dict[str, str]:
+    """Start a background task to process the specified documents"""
     background_tasks.add_task(process_documents_task, document_ids)
+    logging.info(f"Processing started for {len(document_ids)} documents.")
+    
     return {"message": f"Processing started for {len(document_ids)} documents."}
 
 @app.post("/search")
-def search(request: Search):
+def search(request: Search) -> Dict[str, Any]:
+    """Perform a semantic search and return the results"""
     query = request.query
     num_results = request.num_results
     results = semantic_search(query, num_results)
+    
     return {"results": results}
 
 if __name__ == "__main__":
