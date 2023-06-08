@@ -1,6 +1,8 @@
 # Import standard libraries
 import logging
 import os
+import re
+import string
 from typing import Any, Dict, List, Union
 
 # Import third-party libraries
@@ -21,137 +23,167 @@ from sqlalchemy.orm import sessionmaker
 # Initialize logging
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
+# Define use case
+USE_CASE = "agreementsTest"
+
 # Download NLTK data
 def download_nltk_data():
-  """Download necessary NLTK data files"""
-  nltk_data_dir = os.path.expanduser("~/nltk-data")
-  punkt_path = os.path.join(nltk_data_dir, "tokenizers/punkt")
-  
-  if not os.path.exists(punkt_path):
-    nltk.download("punkt", quiet=True)
+    """Download necessary NLTK data"""
+    nltk_data_dir = os.path.expanduser("~/nltk-data")
+    punkt_path = os.path.join(nltk_data_dir, "tokenizers/punkt"):
+
+    if not os.path.exists(punkt_path):
+        nltk.download("punkt", quiet=True)
 
 download_nltk_data()
 
 # Define the database schema
 metadata = MetaData()
-sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), 
-                        Column("original_text", String), Column("clean_text", String), 
-                        Column("documents", PickleType), Column("embedding", PickleType))
+sentences_table = Table(f"{USE_CASE}", metadata, Column("sent_idx", Integer, primary_key=True), 
+                        Column("text", String), Column("document", PickleType))
 
-# Load the Universal Sentence Encoder from disk
-embed = hub.load("./universal-sentence-encoder")
+# Load Universal Sentence Encoder
+embed = hub.load("I:/universal-sentence-encoder")
 
 # Define the search request model
 class Search(BaseModel):
-  query: str
-  num_results: int
-  context: int = 0
-        
-# Define the FastAPI app
+    query: str
+    num_results: int = 10
+    context: int = 0
+
+# Create the FastAPI app
 app = FastAPI(
     title="Semantic Similarity Search Demo",
-    description="This is a simple API for conducting semantic similarity searches to find language in Executed Agreements. The API utilizes a Faiss index, developed by Facebook AI, and the Universal Sentence Encoder from Google.",
+    description="This is a simple API for conducting semantic similarity searches to find language in Executed Agreements.",
     version="1.0.0"
 )
 
 def db_exists() -> bool:
     """Check if the database exists"""
-    engine = create_engine(f"sqlite:///sentences.db", echo=True)
+    engine = create_engine(f"sqlite:///{USE_CASE}.db", echo=True)
     inspector = inspect(engine)
-    
-    return "sentences" in inspector.get_table_names()
+    return USE_CASE in inspector.get_table_names()
 
 def faiss_index_exists() -> bool:
-    """Check is the Faiss index exists"""
-    return os.path.isfile("sentences.faiss")
+    """Check if the index exists"""
+    return os.path.isfile(f"{USE_CASE}.faiss")
+
+def get_access_token(username: str, password: str) -> str:
+    """Retrieve access token for given user"""
+    url = "https://<IDA>"
+    payload = {
+        "client_id": "<CLIENT_ID>",
+        "grant_type": "password",
+        "username": username,
+        "password": password,
+        "resource": "<RESOURCE>"
+    }
+    response = requests.post(url, payload)
+    token = response.json()["access_token"]    
+    return token
+
+def get_document_metadata(unique_id: str, token: str) -> str:
+    """Retrieve document metadata"""
+    url = "<URL>"
+    payload = {}
+    headers = {
+        "Accept": "application/json",
+        "Authorization": "Bearer" + token
+    }
+    response = requests.get(url=url, headers=headers, data=payload)
+    return response.json()
+
+def get_document_text(unique_id, token) -> str:
+    url = "<URL>"
+    payload = {}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer" + token
+    }
+    response = requests.get(url=url, headers=headers, data=payload)
+    return response.text
+
+def process_sentences(text: str) -> str:
+    sentences = sent_tokenize(text)
+
+    sentences_with_offsets = []
     
+    current_position = 0
+    idx = 0
+
+    for sentence in sentences:
+        start = current_position
+        end = start + len(sentence)
+        
+        sentences_with_offsets.append({
+            "idx": idx, 
+            "sentence": sentence, 
+            "start": start, 
+            "end": end
+        })
+        
+        current_position = end + 1
+        idx += 1
+    
+    return sentences_with_offsets
+
+def preprocess_text(text: str) -> str:
+    text = re.sub(r'[""\"]', '', text)
+    text = re.sub(r'\r?\n', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    return text.lower()
+
+# Check to see if the database and index exist
 database_exists = db_exists()
 index_exists = faiss_index_exists()
 
+# Connect to existing database or create new one
 if database_exists:
-    # Connect to existing database
-    engine = create_engine(f"sqlite:///sentences.db", echo=True)
+    engine = create_engine(f"sqlite:///{USE_CASE}.db", echo=True)
     Session = sessionmaker(bind=engine)
     session = Session()
     logging.info("Connected to existing database.")
 else:
-    engine = create_engine("sqlite:///sentences.db", echo=True)
+    engine = create_engine(f"sqlite:///{USE_CASE}.db", echo=True)
     metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     session = Session()
-    
+
+# Load existing index or create new one
 if index_exists:
-    faiss_index = faiss.read_index("sentences.db")
+    faiss_index = faiss.read_index(f"{USE_CASE}.faiss")
     logging.info("Loaded Faiss index from disk.")
 else:
     dim = 512
     faiss_index = faiss.IndexFlatL2(dim)
     faiss_index = faiss.IndexIDMap(faiss_index)
 
+# Only fetch document data if the database or index don't exist
 if not database_exists or not index_exists:
     # Load credentials
     config = ConfigParser()
     config.read("H:/jpmDesk/Desktop/credentials.ini")
     username = config.get("default", "username")
     password = config.get("default", "password")
-    
+
     # Load document data
-    data = pd.read_excel("executedAgreements5-22-2023.xlsx", engine="openpyxl")
+    data = pd.read_excel(<FILEPATH>, engine="openpyxl")
     unique_ids = list(data["UnifiedDocID"])
-    
-    def get_doclink_token(username: str, password: str) -> str:
-        """Retrieve doclink token for given user"""
-        url = "https://idag2.jpmorganchase.com/adfs/oauth2/token"
-        payload = {
-            "client_id": "PC-34963-SID-20429-PROD",
-            "grant_type": "password",
-            "username": "NAEAST\\" + username,
-            "password": password,
-            "resource": "JPMC:URI:RS-34963-18863-AWMContentCloud-PROD"
-        }
-        response = requests.post(url, payload)
-        token = response.json()["access_token"]
-        return token
-    
-    def get_document_metadata(unique_id: str, token: str) -> str:
-        """Retrieve document metadata"""
-        url = f"https://ecm-doclink-services.prod.gaiacloud.jpmchase.net/api/core/v1/app/Scribe/documents/{unique_id}"
-        payload = {}
-        headers = {
-            "Accept": "application/json",
-        }
-        response = requests.get(url=url, headers=headers, data=payload)
-        return response.json()
-        
-    def get_document_text(unique_id: str, token: str) -> str:
-        url = f"https://ecm-doclink-services.prod.gaiacloud.jpmchase.net/api/core/v1/app/Scribe/documents/{unique_id}"
-        payload = {}
-        headers = {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer" + token
-        }
-        response = requests.get(url=url, headers=headers, data=payload)
-        return response.text
-    
-    def process_documents(document_ids: List[str]) -> None:
-        pass
     
     # Process documents
     count = 0
-    
-    unique_sentences = {}
-    seen_sentences = {}
-    
+
     batch_sentences = []
     batch_sent_idx = []
     batch_embeddings = []
-    
+
     BATCH_SIZE = 10000
 
     for unique_id in unique_ids:
         try:
             if count % BATCH_SIZE == 0:
-                token = get_doclink_token(username, password)
+                token = get_access_token(username, password)
                 logging.info(f"New token fetched for batch starting at {count}.")
 
             document_text = get_document_text(unique_id, token)
@@ -161,35 +193,19 @@ if not database_exists or not index_exists:
             raw_sentences = sent_tokenize(document_text)
 
             for raw_sentence in raw_sentences:
-                clean_sentence = raw_sentence.lower()
+                clean_sentence = process_sentences(raw_sentences)
 
                 if not clean_sentence.strip():
                     continue
-            
-                if clean_sentence not in seen_sentences:
-                    embedding = embed([clean_sentence]).numpy()[0].tolist()
-                    batch_embeddings.append(embedding)
 
-                    unique_sentences[count] = {
-                        "original_text": raw_sentence,
-                        "clean_text": clean_sentence,
-                        "documents": [{"id": unique_name, "name": document_name}],
-                        "embedding": embedding
-                    }
+                embedding = embed([clean_sentence]).numpy()[0].tolist()
+                batch_embeddings.append(embedding)
 
-                    batch_sent_idx.append(count)
-                    seen_sentences[clean_sentence] = count
-
-                    batch_sentences.append({
-                        "sent_idx": count,
-                        "original_text": raw_sentence,
-                        "clean_text": clean_sentence,
-                        "documents": [{"id": unique_id, "name": document_name}],
-                        "embedding": embedding
-                    })
-                else:
-                    sentence_index = seen_sentences[clean_sentence]
-                    unique_sentences[sentence_index]["documents"].({"id": unique_id, "name": document_name})
+                batch_sentences.append({
+                    "sent_idx": count,
+                    "text": raw_sentence,
+                    "document": {"id": unique_id, "name": document_name}
+                })
 
                 count += 1
 
@@ -197,7 +213,7 @@ if not database_exists or not index_exists:
                     with session.begin():
                         session.execute(sentences_table.insert(), batch_sentences)
                         faiss_index.add_with_ids(np.array(batch_embeddings), np.array(batch_sent_idx))
-                        
+
                         batch_sentences = []
                         batch_sent_idx = []
                         batch_embeddings = []
@@ -206,12 +222,13 @@ if not database_exists or not index_exists:
         except Exception as e:
             logging.error(f"Error processing document with id {unique_id}: {str(e)}")
 
-    if batch_sentences:
-        with session.begin():
-            session.execute(sentences_table.insert(), batch_sentences)
-            faiss_index.add_with_ids(np.array(batch_embeddings), np.array(batch_sent_idx))
+        if batch_sentences:
+            with session.begin():
+                session.execute(sentences_table.insert(), batch_sentences)
+                faiss_index.add_with_ids(np.array(batch_embeddings), np.array(batch_sent_idx))                        
 
-    faiss.write_index(faiss_index, "sentences.faiss")
+        faiss.write_index(faiss_index, f"{USE_CASE}.faiss")
+        logging.info("Finished processing documents.")
 
 def semantic_search(query: str, num_results: int = 10, context: int = 0) -> List[Dict[str, Union[str, List[Dict[str, str]], float]]]:
     """Perform a semantic search given a query and the desired number of results"""
@@ -219,7 +236,7 @@ def semantic_search(query: str, num_results: int = 10, context: int = 0) -> List
     query_embedding = embed([clean_query])
 
     D, I = faiss_index.search(query_embedding, k=num_results)
-
+    
     results = []
 
     for i in range(I.shape[1]):
@@ -232,28 +249,26 @@ def semantic_search(query: str, num_results: int = 10, context: int = 0) -> List
         if result is not None:
             documents = result[3]
             original_text = result[1]
-            
+
             if context > 0:
-              # Fetch sentences before current sentence to provide context
-              stmt_before = select(sentences_table).where(sentences_table.c.sent_idx >= index_id - context, sentences_table.c.sent_idx < index_id)
-              result_before = session.execute(stmt_before).fetchall()
-              
-              # Fetch sentences after current sentence to provide context
-              stmt_after = select(sentences_table).where(sentences_table.c.sent_idx > index_id, sentences_table.c.sent_idx <= index_id + context) 
-              result_after = session.execute(stmt_after).fetchall()
-            
-              context_sentences = [r[1] for r in result_before] + [original_text] + [r[1] for r in result_after]
-              context_sentences = " ".join(context_sentences)
+                # Fetch sentences before matched sentence to provide context
+                stmt_before = select(sentences_table).where(sentences_table.c.sent_idx >= index_id - context, sentences_table.c.sent_idx < index_id)
+                result_before = session.execute(stmt_before).fetchall()
+
+                # Fetch sentences after matched sentence to provide context
+                stmt_after = select(sentences_table).where(sentences_table.c.sent_idx > index_id, sentences_table.c.sent_idx <= index_id + context)                
+                result_after = session.execute(stmt_after).fetchall()
+
+                context_sentences = [r[1] for r in result_before] + [original_text] + [r[1] for r in result_after]
+                context_sentences = " ".join(context_sentences)
             else:
-              context_sentences = original_text
-            
+                context_sentences = original_text
 
             sentence_info = {
                 "text": context_sentences,
                 "documents": documents,
                 "similarity_score": float(similarity_score)
             }
-
             results.append(sentence_info)
         else:
             logging.info(f"No result found for index_id {index_id}")
@@ -261,7 +276,7 @@ def semantic_search(query: str, num_results: int = 10, context: int = 0) -> List
     return results
 
 @app.get("/health")
-def health_check() -> Dict[str, str]:
+def health_check() -> Dict[str, Any]:
     """Returns a message indicating that the server is running"""
     return {"message": "The server is running."}
 
@@ -271,8 +286,7 @@ def search(request: Search) -> Dict[str, Any]:
     query = request.query
     num_results = request.num_results
     context = request.context
-    results = semantic_search(query, num_results, context)
-    
+    results = semantic_search(query, num_results, context) 
     return {"results": results}
 
 if __name__ == "__main__":
