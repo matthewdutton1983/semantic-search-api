@@ -203,7 +203,7 @@ else:
 
     faiss.write_index(faiss_index, "sentences.faiss")
 
-def semantic_search(query: str, num_results: int, context: int = 0) -> List[Dict[str, Union[str, List[Dict[str, str]], float]]]:
+def semantic_search(query: str, num_results: int = 10, context: int = 0) -> List[Dict[str, Union[str, List[Dict[str, str]], float]]]:
     """Perform a semantic search given a query and the desired number of results"""
     clean_query = query.lower()
     query_embedding = embed([clean_query])
