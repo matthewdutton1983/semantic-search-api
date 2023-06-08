@@ -22,7 +22,15 @@ from sqlalchemy.orm import sessionmaker
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # Download NLTK data
-nltk.download("punkt", quiet=True)
+def download_nltk_data():
+  """Download necessary NLTK data files"""
+  nltk_data_dir = os.path.expanduser("~/nltk-data")
+  punkt_path = os.path.join(nltk_data_dir, "tokenizers/punkt")
+  
+  if not os.path.exists(punkt_path):
+    nltk.download("punkt", quiet=True)
+
+download_nltk_data()
 
 # Define the database schema
 metadata = MetaData()
@@ -247,9 +255,10 @@ def health_check() -> Dict[str, str]:
     """Returns a message indicating that the server is running"""
     return {"message": "The server is running."}
 
-def process_documents_task(document_ids: List[str]) -> None:
+async def process_documents_task(document_ids: List[str]) -> None:
     """Process the specified documents"""
-    process_documents(document_ids)
+    for document_id in document_ids:
+      await process_documents(document_id)
 
 @app.post("/process")
 async def process_documents(background_tasks: BackgroundTasks, document_ids: List[str]) -> Dict[str, str]:
