@@ -35,8 +35,9 @@ embed = hub.load("./universal-sentence-encoder")
 
 # Define the search request model
 class Search(BaseModel):
-    query: str
-    num_results: int
+  query: str
+  num_results: int
+  context: int = 0
         
 # Define the FastAPI app
 app = FastAPI(
@@ -194,7 +195,7 @@ else:
 
     faiss.write_index(faiss_index, "sentences.faiss")
 
-def semantic_search(query: str, num_results: int) -> List[Dict[str, Union[str, List[Dict[str, str]], float]]]:
+def semantic_search(query: str, num_results: int, context: int = 0) -> List[Dict[str, Union[str, List[Dict[str, str]], float]]]:
     """Perform a semantic search given a query and the desired number of results"""
     clean_query = query.lower()
     query_embedding = embed([clean_query])
@@ -213,9 +214,24 @@ def semantic_search(query: str, num_results: int) -> List[Dict[str, Union[str, L
         if result is not None:
             documents = result[3]
             original_text = result[1]
+            
+            if context > 0:
+              # Fetch sentences before current sentence to provide context
+              stmt_before = select(sentences_table).where(sentences_table.c.sent_idx >= index_id - context, sentences_table.c.sent_idx < index_id)
+              result_before = session.execute(stmt_before).fetchall()
+              
+              # Fetch sentences after current sentence to provide context
+              stmt_after = select(sentences_table).where(sentences_table.c.sent_idx > index_id, sentences_table.c.sent_idx <= index_id + context) 
+              result_after = session.execute(stmt_after).fetchall()
+            
+              context_sentences = [r[1] for r in result_before] + [original_text] + [r[1] for r in result_after]
+              context_sentences = " ".join(context_sentences)
+            else:
+              context_sentences = original_text
+            
 
             sentence_info = {
-                "text": original_text,
+                "text": context_sentences,
                 "documents": documents,
                 "similarity_score": float(similarity_score)
             }
@@ -248,7 +264,8 @@ def search(request: Search) -> Dict[str, Any]:
     """Perform a semantic search and return the results"""
     query = request.query
     num_results = request.num_results
-    results = semantic_search(query, num_results)
+    context = request.context
+    results = semantic_search(query, num_results, context)
     
     return {"results": results}
 
