@@ -54,13 +54,13 @@ app = FastAPI(
 
 def db_exists() -> bool:
     """Check if the database exists"""
-    engine = create_engine(f"sqlite:///{USE_CASE}.db", echo=True)
+    engine = create_engine(f"sqlite:///data/{USE_CASE}.db", echo=True)
     inspector = inspect(engine)
     return USE_CASE in inspector.get_table_names()
 
 def faiss_index_exists() -> bool:
     """Check if the index exists"""
-    return os.path.isfile(f"{USE_CASE}.faiss")
+    return os.path.isfile(f"./data/{USE_CASE}.faiss")
 
 def get_access_token(username: str, password: str) -> str:
     """Retrieve doclink token for given user"""
@@ -112,19 +112,19 @@ index_exists = faiss_index_exists()
 
 # Connect to existing database or create new one
 if database_exists:
-    engine = create_engine(f"sqlite:///{USE_CASE}.db", echo=True)
+    engine = create_engine(f"sqlite:///data/{USE_CASE}.db", echo=True)
     Session = sessionmaker(bind=engine)
     session = Session()
     logging.info("Connected to existing database.")
 else:
-    engine = create_engine(f"sqlite:///{USE_CASE}.db", echo=True)
+    engine = create_engine(f"sqlite:///data/{USE_CASE}.db", echo=True)
     metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     session = Session()
 
 # Load existing index or create new one
 if index_exists:
-    faiss_index = faiss.read_index(f"{USE_CASE}.faiss")
+    faiss_index = faiss.read_index(f"./data/{USE_CASE}.faiss")
     logging.info("Loaded Faiss index from disk.")
 else:
     dim = 512
