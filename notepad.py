@@ -20,11 +20,11 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, inspect, select, Table, Column, Integer, MetaData, PickleType, String
 from sqlalchemy.orm import sessionmaker
 
+# Import project code
+from config import CLIENT_ID, CREDENTIALS_FILE, DOMAIN, EXCEL_FILE, RESOURCE, SERVER_URL, TOKEN_ENDPOINT, USE_CASE
+
 # Initialize logging
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
-
-# Define use case
-USE_CASE = "executed-agreements"
 
 # Download NLTK data
 def download_nltk_data():
@@ -70,13 +70,13 @@ def faiss_index_exists() -> bool:
 
 def get_access_token(username: str, password: str) -> str:
     """Retrieve doclink token for given user"""
-    url = "<URL>"
+    url = TOKEN_ENDPOINT
     payload = {
-        "client_id": "<CLIENT_ID>",
+        "client_id": CLIENT_ID,
         "grant_type": "password",
-        "username": "<DOMAIN>" + username,
+        "username": DOMAIN + username,
         "password": password,
-        "resource": "<RESOURCE>"
+        "resource": RESOURCE
     }
     response = requests.post(url, payload)
     token = response.json()["access_token"]    
@@ -84,7 +84,7 @@ def get_access_token(username: str, password: str) -> str:
 
 def get_document_metadata(unique_id: str, token: str) -> str:
     """Retrieve document metadata"""
-    url = "<URL>"
+    url = SERVER_URL + "/api/core/v1/app/Scribe/documents/{}".format(unique_id)
     payload = {}
     headers = {
         "Accept": "application/json",
@@ -95,7 +95,7 @@ def get_document_metadata(unique_id: str, token: str) -> str:
 
 def get_document_text(unique_id, token) -> str:
     """Retrieve document text"""
-    url = "<URL>"
+    url = SERVER_URL + "/api/core/v1/app/Scribe/documents/{}/binary?extracted=True".format(unique_id)
     payload = {}
     headers = {
         "Content-Type": "application/json",
@@ -141,12 +141,12 @@ else:
 if not database_exists or not index_exists:
     # Load credentials
     config = ConfigParser()
-    config.read("H:/jpmDesk/Desktop/credentials.ini")
+    config.read(CREDENTIALS_FILE)
     username = config.get("default", "username")
     password = config.get("default", "password")
 
     # Load document data
-    data = pd.read_excel("<FILEPATH>")
+    data = pd.read_excel(EXCEL_FILE, engine="openpyxl")
     unique_ids = list(data["UnifiedDocID"])
     
     # Process documents
