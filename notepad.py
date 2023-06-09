@@ -16,7 +16,6 @@ import uvicorn
 from configparser import ConfigParser
 from fastapi import FastAPI
 from nltk.tokenize import sent_tokenize
-from pydantic import BaseModel
 from sqlalchemy import create_engine, inspect, select, Table, Column, Integer, MetaData, PickleType, String
 from sqlalchemy.orm import sessionmaker
 
