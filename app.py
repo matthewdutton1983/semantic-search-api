@@ -14,7 +14,7 @@ import requests
 import tensorflow_hub as hub
 import uvicorn
 from configparser import ConfigParser
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from nltk.tokenize import sent_tokenize
 from sqlalchemy import create_engine, inspect, select, Table, Column, Integer, MetaData, PickleType, String
 from sqlalchemy.orm import sessionmaker
