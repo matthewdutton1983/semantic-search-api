@@ -22,6 +22,7 @@ from sqlalchemy.orm import sessionmaker
 
 # Import project code
 from config import CLIENT_ID, CREDENTIALS_FILE, DOMAIN, EXCEL_FILE, RESOURCE, SERVER_URL, TOKEN_ENDPOINT, USE_CASE
+from models import Search
 
 # Initialize logging
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -44,12 +45,6 @@ sentences_table = Table(f"{USE_CASE}", metadata, Column("sent_idx", Integer, pri
 
 # Load Universal Sentence Encoder
 embed = hub.load("./universal-sentence-encoder")
-
-# Define the search request model
-class Search(BaseModel):
-    query: str
-    num_results: int = 10
-    context: int = 0
 
 # Create the FastAPI app
 app = FastAPI(
