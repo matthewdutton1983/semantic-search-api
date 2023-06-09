@@ -60,7 +60,7 @@ def db_exists() -> bool:
 
 def faiss_index_exists() -> bool:
     """Check if the index exists"""
-    return os.path.isfile(f"./data/{USE_CASE}.faiss")
+    return os.path.isfile(f"data/{USE_CASE}.faiss")
 
 def get_access_token(username: str, password: str) -> str:
     """Retrieve doclink token for given user"""
@@ -124,7 +124,7 @@ else:
 
 # Load existing index or create new one
 if index_exists:
-    faiss_index = faiss.read_index(f"./data/{USE_CASE}.faiss")
+    faiss_index = faiss.read_index(f"data/{USE_CASE}.faiss")
     logging.info("Loaded Faiss index from disk.")
 else:
     dim = 512
@@ -202,7 +202,7 @@ if not database_exists or not index_exists:
             session.execute(sentences_table.insert(), batch_sentences)
             faiss_index.add_with_ids(np.array(batch_embeddings), np.array(batch_sent_idx))                        
 
-    faiss.write_index(faiss_index, f"{USE_CASE}.faiss")
+    faiss.write_index(faiss_index, f"data/{USE_CASE}.faiss")
     logging.info("Finished processing documents.")
 
 def semantic_search(query: str, num_results: int = 10, context: int = 0) -> List[Dict[str, Union[str, List[Dict[str, str]], float]]]:
