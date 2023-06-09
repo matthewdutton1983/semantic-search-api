@@ -24,13 +24,13 @@ from sqlalchemy.orm import sessionmaker
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # Define use case
-USE_CASE = "agreementsTest"
+USE_CASE = "executed-agreements"
 
 # Download NLTK data
 def download_nltk_data():
     """Download necessary NLTK data"""
     nltk_data_dir = os.path.expanduser("~/nltk-data")
-    punkt_path = os.path.join(nltk_data_dir, "tokenizers/punkt"):
+    punkt_path = os.path.join(nltk_data_dir, "tokenizers/punkt")
 
     if not os.path.exists(punkt_path):
         nltk.download("punkt", quiet=True)
@@ -43,7 +43,7 @@ sentences_table = Table(f"{USE_CASE}", metadata, Column("sent_idx", Integer, pri
                         Column("text", String), Column("document", PickleType))
 
 # Load Universal Sentence Encoder
-embed = hub.load("I:/universal-sentence-encoder")
+embed = hub.load("./universal-sentence-encoder")
 
 # Define the search request model
 class Search(BaseModel):
@@ -70,40 +70,42 @@ def faiss_index_exists() -> bool:
 
 def get_access_token(username: str, password: str) -> str:
     """Retrieve doclink token for given user"""
-    pass
+    url = "<URL>"
+    payload = {
+        "client_id": "<CLIENT_ID>",
+        "grant_type": "password",
+        "username": "<DOMAIN>" + username,
+        "password": password,
+        "resource": "<RESOURCE>"
+    }
+    response = requests.post(url, payload)
+    token = response.json()["access_token"]    
+    return token
 
 def get_document_metadata(unique_id: str, token: str) -> str:
     """Retrieve document metadata"""
-    pass
+    url = "<URL>"
+    payload = {}
+    headers = {
+        "Accept": "application/json",
+        "Authorization": "Bearer" + token
+    }
+    response = requests.get(url=url, headers=headers, data=payload)
+    return response.json()
 
 def get_document_text(unique_id, token) -> str:
-    pass
-
-def process_sentences(text: str) -> str:
-    sentences = sent_tokenize(text)
-
-    sentences_with_offsets = []
-    
-    current_position = 0
-    idx = 0
-
-    for sentence in sentences:
-        start = current_position
-        end = start + len(sentence)
-        
-        sentences_with_offsets.append({
-            "idx": idx, 
-            "sentence": sentence, 
-            "start": start, 
-            "end": end
-        })
-        
-        current_position = end + 1
-        idx += 1
-    
-    return sentences_with_offsets
+    """Retrieve document text"""
+    url = "<URL>"
+    payload = {}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer" + token
+    }
+    response = requests.get(url=url, headers=headers, data=payload)
+    return response.text
 
 def preprocess_text(text: str) -> str:
+    """Clean and normalize sentences"""
     text = re.sub(r'[""\"]', '', text)
     text = re.sub(r'\r?\n', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
@@ -144,7 +146,7 @@ if not database_exists or not index_exists:
     password = config.get("default", "password")
 
     # Load document data
-    data = pd.read_excel(<FILEPATH>, engine="openpyxl")
+    data = pd.read_excel("<FILEPATH>")
     unique_ids = list(data["UnifiedDocID"])
     
     # Process documents
@@ -156,9 +158,11 @@ if not database_exists or not index_exists:
 
     BATCH_SIZE = 10000
 
+    token = get_doclink_token(username, password)
+
     for unique_id in unique_ids:
         try:
-            if count % BATCH_SIZE == 0:
+            if count % BATCH_SIZE == 0 and count != 0:
                 token = get_access_token(username, password)
                 logging.info(f"New token fetched for batch starting at {count}.")
 
@@ -169,7 +173,7 @@ if not database_exists or not index_exists:
             raw_sentences = sent_tokenize(document_text)
 
             for raw_sentence in raw_sentences:
-                clean_sentence = process_sentences(raw_sentences)
+                clean_sentence = preprocess_text(raw_sentence)
 
                 if not clean_sentence.strip():
                     continue
@@ -183,6 +187,7 @@ if not database_exists or not index_exists:
                     "document": {"id": unique_id, "name": document_name}
                 })
 
+                batch_sent_idx.append(count)
                 count += 1
 
                 if count % BATCH_SIZE == 0:
@@ -190,21 +195,21 @@ if not database_exists or not index_exists:
                         session.execute(sentences_table.insert(), batch_sentences)
                         faiss_index.add_with_ids(np.array(batch_embeddings), np.array(batch_sent_idx))
 
-                        batch_sentences = []
-                        batch_sent_idx = []
-                        batch_embeddings = []
+                    batch_sentences = []
+                    batch_sent_idx = []
+                    batch_embeddings = []
 
-                        logging.info(f"Loaded {count} sentences.")
+                    logging.info(f"Loaded {count} sentences.")
         except Exception as e:
             logging.error(f"Error processing document with id {unique_id}: {str(e)}")
 
-        if batch_sentences:
-            with session.begin():
-                session.execute(sentences_table.insert(), batch_sentences)
-                faiss_index.add_with_ids(np.array(batch_embeddings), np.array(batch_sent_idx))                        
+    if batch_sentences:
+        with session.begin():
+            session.execute(sentences_table.insert(), batch_sentences)
+            faiss_index.add_with_ids(np.array(batch_embeddings), np.array(batch_sent_idx))                        
 
-        faiss.write_index(faiss_index, f"{USE_CASE}.faiss")
-        logging.info("Finished processing documents.")
+    faiss.write_index(faiss_index, f"{USE_CASE}.faiss")
+    logging.info("Finished processing documents.")
 
 def semantic_search(query: str, num_results: int = 10, context: int = 0) -> List[Dict[str, Union[str, List[Dict[str, str]], float]]]:
     """Perform a semantic search given a query and the desired number of results"""
@@ -223,31 +228,29 @@ def semantic_search(query: str, num_results: int = 10, context: int = 0) -> List
         result = session.execute(stmt).fetchone()
 
         if result is not None:
-            document = result[3]
-            original_text = result[1]
+            document = result[2]
+            text = result[1]
             document_id = document["id"]
 
             if context > 0:
                 # Fetch sentences before matched sentence to provide context
                 stmt_before = select(sentences_table).where(
-                    sentences_table.c.sent_idx >= index_id - context,
-                    sentences_table.c.sent_idx < index_id,
-                    sentences_table.c.document["id"] == document_id
+                    sentences_table.c.sent_idx.between(index_id - context, index_id - 1)
                 )
                 result_before = session.execute(stmt_before).fetchall()
+                result_before = [r for r in result_before if r[2]["id"] == document_id]
 
                 # Fetch sentences after matched sentence to provide context
                 stmt_after = select(sentences_table).where(
-                    sentences_table.c.sent_idx > index_id,
-                    sentences_table.c.sent_idx <= index_id + context,
-                    sentences_table.c.document["id"] == document_id
+                    sentences_table.c.sent_idx.between(index_id + 1, index_id + context)
                 )                
                 result_after = session.execute(stmt_after).fetchall()
+                result_after = [r for r in result_after if r[2]["id"] == document_id]
 
-                context_sentences = [r[1] for r in result_before] + [original_text] + [r[1] for r in result_after]
+                context_sentences = [r[1] for r in result_before] + [text] + [r[1] for r in result_after]
                 context_sentences = " ".join(context_sentences)
             else:
-                context_sentences = original_text
+                context_sentences = text
 
             sentence_info = {
                 "text": context_sentences,
