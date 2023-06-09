@@ -1,8 +1,9 @@
 # Import standard libraries
-import glob
 import logging
 import os
-import uuid
+import re
+import string
+from typing import Any, Dict, List, Union
 
 # Import third-party libraries
 import faiss
@@ -12,180 +13,266 @@ import pandas as pd
 import requests
 import tensorflow_hub as hub
 import uvicorn
+from configparser import ConfigParser
 from fastapi import FastAPI
 from nltk.tokenize import sent_tokenize
-from pydantic import BaseModel
-from sqlalchemy import create_engine, inspect, select, Table, Column, Integer, String, MetaData, PickleType
+from sqlalchemy import create_engine, inspect, select, Table, Column, Integer, MetaData, PickleType, String
 from sqlalchemy.orm import sessionmaker
 
+# Import project code
+from config import CLIENT_ID, CREDENTIALS_FILE, DOMAIN, EXCEL_FILE, RESOURCE, SERVER_URL, TOKEN_ENDPOINT, USE_CASE
+from models import Search
+
+# Initialize logging
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-DATABASE_PATH = "sentences.db"
-DOCUMENTS_PATH = "./documents/"
-FAISS_INDEX_PATH = "sentences.faiss"
+# Download NLTK data
+def download_nltk_data():
+    """Download necessary NLTK data"""
+    nltk_data_dir = os.path.expanduser("~/nltk-data")
+    punkt_path = os.path.join(nltk_data_dir, "tokenizers/punkt")
 
-nltk.download("punkt", quiet=True)
+    if not os.path.exists(punkt_path):
+        nltk.download("punkt", quiet=True)
 
-try:
-    embed = hub.load("./universal-sentence-encoder")
-    logging.info("Sentence encoder loaded from local 'models' directory.")
-except Exception as e:
-    embed = hub.load("https://tfhub.dev/google/universal-sentence-encoder/4")
-    logging.info("Sentence encoder loaded from TensorFlow Hub.")
+download_nltk_data()
 
-# Utility functions
-def db_exists():
-    engine = create_engine(f"sqlite:///{DATABASE_PATH}", echo=False)
+# Define the database schema
+metadata = MetaData()
+sentences_table = Table(f"{USE_CASE}", metadata, Column("sent_idx", Integer, primary_key=True), 
+                        Column("text", String), Column("document", PickleType))
+
+# Load Universal Sentence Encoder
+embed = hub.load("./universal-sentence-encoder")
+
+# Create the FastAPI app
+app = FastAPI(
+    title="Semantic Similarity Search Demo",
+    description="This is a simple API for conducting semantic similarity searches to find language in Executed Agreements.",
+    version="1.0.0"
+)
+
+def db_exists() -> bool:
+    """Check if the database exists"""
+    engine = create_engine(f"sqlite:///{USE_CASE}.db", echo=True)
     inspector = inspect(engine)
-    return "sentences" in inspector.get_table_names()
+    return USE_CASE in inspector.get_table_names()
 
-def faiss_index_exists():
-    return os.path.isfile(FAISS_INDEX_PATH)
+def faiss_index_exists() -> bool:
+    """Check if the index exists"""
+    return os.path.isfile(f"{USE_CASE}.faiss")
 
-def process_text(text):
+def get_access_token(username: str, password: str) -> str:
+    """Retrieve doclink token for given user"""
+    url = TOKEN_ENDPOINT
+    payload = {
+        "client_id": CLIENT_ID,
+        "grant_type": "password",
+        "username": DOMAIN + username,
+        "password": password,
+        "resource": RESOURCE
+    }
+    response = requests.post(url, payload)
+    token = response.json()["access_token"]    
+    return token
+
+def get_document_metadata(unique_id: str, token: str) -> str:
+    """Retrieve document metadata"""
+    url = SERVER_URL + "/api/core/v1/app/Scribe/documents/{}".format(unique_id)
+    payload = {}
+    headers = {
+        "Accept": "application/json",
+        "Authorization": "Bearer" + token
+    }
+    response = requests.get(url=url, headers=headers, data=payload)
+    return response.json()
+
+def get_document_text(unique_id, token) -> str:
+    """Retrieve document text"""
+    url = SERVER_URL + "/api/core/v1/app/Scribe/documents/{}/binary?extracted=True".format(unique_id)
+    payload = {}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer" + token
+    }
+    response = requests.get(url=url, headers=headers, data=payload)
+    return response.text
+
+def preprocess_text(text: str) -> str:
+    """Clean and normalize sentences"""
+    text = re.sub(r'[""\"]', '', text)
+    text = re.sub(r'\r?\n', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = text.translate(str.maketrans('', '', string.punctuation))
     return text.lower()
 
-metadata = MetaData()
-sentences_table = Table("sentences", metadata, Column("sent_idx", Integer, primary_key=True), Column("original_text", String), Column("clean_text", String), Column("document_ids", PickleType), Column("embedding", PickleType))
+# Check to see if the database and index exist
+database_exists = db_exists()
+index_exists = faiss_index_exists()
 
-if db_exists() and faiss_index_exists():
-    # Connect to existing SQLite database
-    engine = create_engine(f"sqlite:///{DATABASE_PATH}", echo=False)
+# Connect to existing database or create new one
+if database_exists:
+    engine = create_engine(f"sqlite:///{USE_CASE}.db", echo=True)
     Session = sessionmaker(bind=engine)
     session = Session()
-    logging.info("Connected to existing SQLite database.")
-    
-    # Load Faiss index from disk
-    faiss_index = faiss.read_index(FAISS_INDEX_PATH)
+    logging.info("Connected to existing database.")
+else:
+    engine = create_engine(f"sqlite:///{USE_CASE}.db", echo=True)
+    metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+# Load existing index or create new one
+if index_exists:
+    faiss_index = faiss.read_index(f"{USE_CASE}.faiss")
     logging.info("Loaded Faiss index from disk.")
 else:
-    # Create SQLite database
-    engine = create_engine("sqlite:///sentences.db", echo=False)
-    metadata.create_all(engine)
-
-    # Start SQLite session
-    Session = sessionmaker(bind=engine)
-    session = Session()  
-
-    # Create Faiss index
     dim = 512
-    faiss_index = faiss.IndexFlatL2(512)
+    faiss_index = faiss.IndexFlatL2(dim)
     faiss_index = faiss.IndexIDMap(faiss_index)
 
+# Only fetch document data if the database or index don't exist
+if not database_exists or not index_exists:
+    # Load credentials
+    config = ConfigParser()
+    config.read(CREDENTIALS_FILE)
+    username = config.get("default", "username")
+    password = config.get("default", "password")
+
+    # Load document data
+    data = pd.read_excel(EXCEL_FILE, engine="openpyxl")
+    unique_ids = list(data["UnifiedDocID"])
+    
     # Process documents
     count = 0
-    unique_sentences = {}
-    seen_sentences = {}
-    sent_indexes = []
-    embeddings = []
 
-    documents = glob.glob(DOCUMENTS_PATH + "*")
+    batch_sentences = []
+    batch_sent_idx = []
+    batch_embeddings = []
 
-    for document in documents:
+    BATCH_SIZE = 10000
+
+    token = get_doclink_token(username, password)
+
+    for unique_id in unique_ids:
         try:
-            unique_id = uuid.uuid4()
+            if count % BATCH_SIZE == 0 and count != 0:
+                token = get_access_token(username, password)
+                logging.info(f"New token fetched for batch starting at {count}.")
 
-            with open(document, "r") as f:
-                text = f.read()
-                name = os.path.basename(document)
+            document_text = get_document_text(unique_id, token)
+            document_metadata = get_document_metadata(unique_id, token)
+            document_name = document_metadata["metadata"]["core"]["documentName"]
 
-            raw_sentences = sent_tokenize(text)
+            raw_sentences = sent_tokenize(document_text)
 
             for raw_sentence in raw_sentences:
-                clean_sentence = process_text(text)
+                clean_sentence = preprocess_text(raw_sentence)
 
                 if not clean_sentence.strip():
                     continue
 
-                if clean_sentence not in seen_sentences:
-                    embedding = embed([clean_sentence]).numpy()[0].tolist()
-                    embeddings.append(embedding)
+                embedding = embed([clean_sentence]).numpy()[0].tolist()
+                batch_embeddings.append(embedding)
 
-                    unique_sentences[count] = {
-                        "original_text": raw_sentence,
-                        "clean_text": clean_sentence,
-                        "document_ids: [unique_id],
-                        "embedding": embedding
-                    }
+                batch_sentences.append({
+                    "sent_idx": count,
+                    "text": raw_sentence,
+                    "document": {"id": unique_id, "name": document_name}
+                })
 
-                    sent_indexes.append(count)
-                    seen_sentences[clean_sentence] = count
-
-                    stmt = sentences_table.insert().values(
-                        sent_idx = count,
-                        original_text = unique_sentences[count]["original_text"],
-                        clean_text = unique_sentences[count]["document_ids"],
-                        embedding = unique_sentences[count]["embedding"]
-                    )
-
-                    session.execute(stmt)
-                    session.commit()
-
-                else:
-                    sentence_index = seen_sentences[clean_sentence]
-                    unique_sentences[sentence_index]["document_ids"].append(unique_id)
-
-                if count % BATCH_SIZE == 0:
-                    print(f"Loaded {count} sentences.")
-
+                batch_sent_idx.append(count)
                 count += 1
 
+                if count % BATCH_SIZE == 0:
+                    with session.begin():
+                        session.execute(sentences_table.insert(), batch_sentences)
+                        faiss_index.add_with_ids(np.array(batch_embeddings), np.array(batch_sent_idx))
+
+                    batch_sentences = []
+                    batch_sent_idx = []
+                    batch_embeddings = []
+
+                    logging.info(f"Loaded {count} sentences.")
         except Exception as e:
-            print(f"Error processing document with id {unique_id}: {str(e)}")
+            logging.error(f"Error processing document with id {unique_id}: {str(e)}")
 
-    faiss_index.add_with_ids(np.array(embeddings), np.array(sent_indexes))
-    faiss.write_index(faiss_index, "sentences.faiss")
+    if batch_sentences:
+        with session.begin():
+            session.execute(sentences_table.insert(), batch_sentences)
+            faiss_index.add_with_ids(np.array(batch_embeddings), np.array(batch_sent_idx))                        
 
-def semantic_search(query):
-    clean_query = process_text(query)
+    faiss.write_index(faiss_index, f"{USE_CASE}.faiss")
+    logging.info("Finished processing documents.")
+
+def semantic_search(query: str, num_results: int = 10, context: int = 0) -> List[Dict[str, Union[str, List[Dict[str, str]], float]]]:
+    """Perform a semantic search given a query and the desired number of results"""
+    clean_query = query.lower()
     query_embedding = embed([clean_query])
-    
-    D, I = faiss_index.search(query_embedding, k=10)
+
+    D, I = faiss_index.search(query_embedding, k=num_results)
     
     results = []
-    
+
     for i in range(I.shape[1]):
-        index_id = int(I[0, i])
-        similarity_score = D[0. i]
-        
+        index_id =  int(I[0, i])
+        similarity_score = D[0, i]
+
         stmt = select(sentences_table).where(sentences_table.c.sent_idx == index_id)
         result = session.execute(stmt).fetchone()
-        
+
         if result is not None:
-            document_ids = result[3]
-            original_text = result[1]
-            
+            document = result[2]
+            text = result[1]
+            document_id = document["id"]
+
+            if context > 0:
+                # Fetch sentences before matched sentence to provide context
+                stmt_before = select(sentences_table).where(
+                    sentences_table.c.sent_idx.between(index_id - context, index_id - 1)
+                )
+                result_before = session.execute(stmt_before).fetchall()
+                result_before = [r for r in result_before if r[2]["id"] == document_id]
+
+                # Fetch sentences after matched sentence to provide context
+                stmt_after = select(sentences_table).where(
+                    sentences_table.c.sent_idx.between(index_id + 1, index_id + context)
+                )                
+                result_after = session.execute(stmt_after).fetchall()
+                result_after = [r for r in result_after if r[2]["id"] == document_id]
+
+                context_sentences = [r[1] for r in result_before] + [text] + [r[1] for r in result_after]
+                context_sentences = " ".join(context_sentences)
+            else:
+                context_sentences = text
+
             sentence_info = {
-                "text": original_text,
-                "document_ids": document_ids,
-                "similarity_score": similarity_score
+                "text": context_sentences,
+                "document": document,
+                "similarity_score": float(similarity_score)
             }
-            
             results.append(sentence_info)
         else:
-            print(f"No result found for index_id {index_id}")
-    
+            logging.info(f"No result found for index_id {index_id}")
+
     return results
 
-# Create FastAPI app
-app = FastAPI(
-    title="Semantic Search API", 
-    description="This is a simple API for conducting semantic searches that utilizes Faiss and the Universal Sentence Encoder.", 
-    version="1.0.0"
-)
-
-class Search(BaseModel):
-    query: str
-
 @app.get("/health")
-def health_check():
-    return {"message": "The server is running"}
+def health_check() -> Dict[str, Any]:
+    """Returns a message indicating that the server is running"""
+    return {"message": "The server is running."}
 
 @app.post("/search")
-def search(search: Search):
-    query = search.query
-    results = semantic_search(query)
+def search(request: Search) -> Dict[str, Any]:
+    """Perform a semantic search and return the results"""
+    query = request.query
+    num_results = request.num_results
+    context = request.context
+    results = semantic_search(query, num_results, context) 
     return {"results": results}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    finally:
+        session.close()
