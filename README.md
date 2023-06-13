@@ -1,1 +1,1 @@
-# semantic-search-api
+# Semantic Similarity Search Demo
