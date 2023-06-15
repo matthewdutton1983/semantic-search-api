@@ -34,24 +34,7 @@ def download_nltk_data():
 
     if not os.path.exists(punkt_path):
         nltk.download("punkt", quiet=True)
-
-download_nltk_data()
-
-# Define the database schema
-metadata = MetaData()
-sentences_table = Table(f"{USE_CASE}", metadata, Column("sent_idx", Integer, primary_key=True), 
-                        Column("text", String), Column("document", PickleType))
-
-# Load Universal Sentence Encoder
-embed = hub.load("./universal-sentence-encoder")
-
-# Create the FastAPI app
-app = FastAPI(
-    title="Semantic Similarity Search Demo",
-    description="This is a simple API for conducting semantic similarity searches to find language in Executed Agreements.",
-    version="1.0.0"
-)
-
+        
 def db_exists() -> bool:
     """Check if the database exists"""
     engine = create_engine(f"sqlite:///data/{USE_CASE}.db", echo=True)
@@ -105,6 +88,23 @@ def preprocess_text(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
     text = text.translate(str.maketrans('', '', string.punctuation))
     return text.lower()
+
+download_nltk_data()
+
+# Define the database schema
+metadata = MetaData()
+sentences_table = Table(f"{USE_CASE}", metadata, Column("sent_idx", Integer, primary_key=True), 
+                        Column("text", String), Column("document", PickleType))
+
+# Load Universal Sentence Encoder
+embed = hub.load("./universal-sentence-encoder")
+
+# Create the FastAPI app
+app = FastAPI(
+    title="Semantic Similarity Search Demo",
+    description="This is a simple API for conducting semantic similarity searches to find language in Executed Agreements.",
+    version="1.0.0"
+)
 
 # Check to see if the database and index exist
 database_exists = db_exists()
